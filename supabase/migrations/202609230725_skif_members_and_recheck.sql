@@ -6,6 +6,7 @@ create table if not exists public.skif_members (
   verified_at timestamptz not null default now()
 );
 alter table public.skif_members enable row level security;
+alter table public.skif_members force row level security;
 drop policy if exists "service role can read skif_members" on public.skif_members;
 create policy "service role can read skif_members"
   on public.skif_members
@@ -41,6 +42,7 @@ do $$
 declare
   existing_job_id bigint;
   cron_secret text;
+  cron_command text;
 begin
   select decrypted_secret
   into cron_secret
@@ -62,15 +64,17 @@ begin
     perform cron.unschedule(existing_job_id);
   end if;
 
-  perform cron.schedule('skif-recheck', '* * * * *', $job$
+  cron_command := format($cmd$
     select net.http_post(
       url     := 'https://kcxkznquxuqnwjkdbjsm.supabase.co/functions/v1/recheck',
       headers := jsonb_build_object(
         'content-type','application/json',
-        'x-cron-secret', cron_secret
+        'x-cron-secret', %L
       ),
       body    := '{}'::jsonb
     );
-  $job$);
+  $cmd$, cron_secret);
+
+  perform cron.schedule('skif-recheck', '* * * * *', cron_command);
 end
 $$;
