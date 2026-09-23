@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>µNORMAN SKIF</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  body{font-family:system-ui,sans-serif;background:var(--tg-theme-bg-color,#000);color:var(--tg-theme-text-color,#fff);padding:24px 16px;text-align:center;max-width:560px;margin:auto}
+  button{font-size:18px;padding:14px 28px;border:0;border-radius:12px;background:var(--tg-theme-button-color,#2ea6ff);color:var(--tg-theme-button-text-color,#fff)}
+  #s{margin-top:16px;min-height:1.5em}
+  #links a{display:block;margin:8px 0;padding:12px;border-radius:10px;background:var(--tg-theme-secondary-bg-color,#1c1c1e);color:inherit;text-decoration:none}
+  #feed{list-style:none;padding:0;text-align:left;font:13px ui-monospace,monospace}
+  #feed li{padding:6px 0;border-bottom:1px solid #333;word-break:break-word}
+  .fine{opacity:.6;font-size:12px}
+</style>
+</head>
+<body>
+<h2>µNORMAN ($uNRMN) SKIF</h2>
+<p>Hold ≥10 $uNRMN on Robinhood Chain to enter. The bot keeps checking your wallet.</p>
+<button id="go">Connect & Sign</button>
+<p id="s"></p>
+<div id="links"></div>
+<h3 id="live">📈 Live $uNRMN activity</h3>
+<ul id="feed"><li>Loading…</li></ul>
+<p class="fine">Not financial advice. DYOR.</p>
+<script type="module">
+import { EthereumProvider } from "https://esm.sh/@walletconnect/ethereum-provider@2";
+
+const VERIFY_URL = "https://kcxkznquxuqnwjkdbjsm.supabase.co/functions/v1/verify";
+const WC_PROJECT_ID = "b1ae71bceaa7aed2c6ace6bc44a75193"; // cloud.reown.com
+const TOKEN = "0x7ed16d612215b650434d7e45827cf080ea0d0f63";
+const WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
+const LINKS = [
+  ["🛒 Buy $uNRMN on uToken", "https://utoken.gg/token/unrmn"],
+  ["🦄 Swap WETH → $uNRMN (Uniswap)", `https://app.uniswap.org/swap?chain=robinhood&inputCurrency=${WETH}&outputCurrency=${TOKEN}`],
+  ["🃏 Mint / reveal µNORMAN cards", "https://utoken.gg/collection/unrmn"],
+  ["🛠 Follow the Hybrid-DeFi dApp build (GitHub) — hodlr beta access", "https://github.com/normancomics/uNRMN"],
+  ["🥩 $uNRMN × $uFEELSFAKE staking (mint.club)", "https://mint.club/staking/robinhood/1"],
+  ["🐸 $uFEELSFAKE (mint.club)", "https://mint.club/token/robinhood/UFEELSFAKE"],
+  ["🐸 $uPEPECASH (mint.club)", "https://mint.club/nft/robinhood/UPEPECASH"],
+  ["💬 $uNRMN chat on uToken", "https://utoken.gg/collection/unrmn"],
+  ["𝕏 @uNORMANCOMICS", "https://x.com/uNORMANCOMICS"],
+  ["𝕏 @KEKBONDS", "https://x.com/KEKBONDS"],
+];
+
+const tg = window.Telegram.WebApp; tg.ready(); tg.expand();
+const s = document.getElementById("s");
+
+// Links (textContent only — nothing user-controlled is ever injected as HTML)
+const box = document.getElementById("links");
+for (const [label, url] of LINKS) {
+  const a = document.createElement("a"); a.href = "#"; a.textContent = label;
+  a.onclick = (e) => { e.preventDefault(); tg.openLink(url); };
+  box.appendChild(a);
+}
+
+// Live feed from Blockscout, refreshed every 10s
+const ZERO = "0x0000000000000000000000000000000000000000";
+const short = (a = "") => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "?";
+async function loadFeed() {
+  try {
+    const r = await fetch(`https://robinhoodchain.blockscout.com/api/v2/tokens/${TOKEN}/transfers`);
+    const { items = [] } = await r.json();
+    const ul = document.getElementById("feed"); ul.replaceChildren();
+    for (const t of items.slice(0, 25)) {
+      const from = t.from?.hash ?? "", to = t.to?.hash ?? "";
+      const kind = from.toLowerCase() === ZERO ? "MINT" : to.toLowerCase() === ZERO ? "BURN"
+        : (t.method ? String(t.method).toUpperCase() : "SEND");
+      const dec = Number(t.total?.decimals ?? 0);
+      const amt = t.total?.value != null ? (Number(BigInt(t.total.value)) / 10 ** dec).toLocaleString("en-US", { maximumFractionDigits: 4 })
+        : (t.total?.token_id != null ? `#${t.total.token_id}` : "");
+      const li = document.createElement("li");
+      li.textContent = `${kind} ${amt} · ${short(from)} → ${short(to)} · ${t.timestamp ? new Date(t.timestamp).toLocaleString() : ""}`;
+      ul.appendChild(li);
+    }
+  } catch { document.getElementById("feed").replaceChildren(Object.assign(document.createElement("li"), { textContent: "Feed unavailable" })); }
+}
+loadFeed(); setInterval(loadFeed, 10000);
+if (location.hash === "#live") document.getElementById("live").scrollIntoView();
+
+// Verify
+document.getElementById("go").onclick = async () => {
+  try {
+    const initData = tg.initData;
+    if (!initData) throw new Error("Open this inside Telegram");
+    // Needed so the bot can DM you (e.g. when you hit 10 $uNRMN) if you opened this from inline mode
+    if (tg.requestWriteAccess) await new Promise((r) => tg.requestWriteAccess(r));
+
+    const auth = new URLSearchParams(initData).get("auth_date");
+    const message = `uNRMN SKIF access\nTelegram ID: ${tg.initDataUnsafe.user.id}\nIssued: ${auth}`;
+
+    const p = await EthereumProvider.init({
+      projectId: WC_PROJECT_ID, optionalChains: [4663, 1], showQrModal: true,
+      metadata: { name: "uNRMN SKIF", description: "Token gate", url: location.origin, icons: [] },
+    });
+    await p.connect();
+    const [address] = p.accounts;
+
+    s.textContent = "Sign in your wallet…";
+    const hex = "0x" + [...new TextEncoder().encode(message)].map(b => b.toString(16).padStart(2, "0")).join("");
+    const signature = await p.request({ method: "personal_sign", params: [hex, address] });
+
+    s.textContent = "Checking balance…";
+    const r = await (await fetch(VERIFY_URL, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ initData, address, signature }),
+    })).json();
+    if (!r.ok) throw new Error(r.error);
+
+    s.textContent = "✅ Verified — welcome to the SKIF.";
+    if (r.link) tg.openTelegramLink(r.link); else setTimeout(() => tg.close(), 2000);
+  } catch (e) { s.textContent = "⚠️ " + (e.message || e); }
+};
+</script>
+</body>
+</html>
