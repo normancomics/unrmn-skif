@@ -7,6 +7,8 @@ const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SE
 const CHAT = Deno.env.get("SKIF_CHAT_ID") ?? "";
 const SECRET = Deno.env.get("TG_WEBHOOK_SECRET")!;
 const MINIAPP = Deno.env.get("MINIAPP_URL")!;
+// Comma-separated Telegram user IDs that are never deleted or kicked (the host/owner).
+const OWNERS = new Set((Deno.env.get("SKIF_OWNER_IDS") ?? "").split(",").map((x) => x.trim()).filter(Boolean));
 
 Deno.serve(async (req) => {
   // One-tap setup: GET ?setup=<TG_WEBHOOK_SECRET> registers the webhook using the token stored in Supabase.
@@ -73,12 +75,15 @@ async function handle(u: any) {
   }
 
   // 5. Nobody talks in SKIF without a verified wallet: unverified posters are deleted + removed (admins exempt).
-  if (m && CHAT && String(m.chat?.id) === CHAT && m.from && !m.from.is_bot && !m.sender_chat) {
+  if (m && CHAT && String(m.chat?.id) === CHAT && m.from && !m.from.is_bot && !m.sender_chat &&
+      !m.is_automatic_forward && !OWNERS.has(String(m.from.id))) {
     const uid = m.from.id;
     const { data } = await sb.from("skif_members").select("is_holder").eq("tg_user_id", uid).maybeSingle();
     if (!data?.is_holder) {
-      const st = (await tg("getChatMember", { chat_id: CHAT, user_id: uid })).result?.status;
-      if (st !== "administrator" && st !== "creator") {
+      const member = await tg("getChatMember", { chat_id: CHAT, user_id: uid });
+      // Only act on a confirmed plain member — a failed lookup must never delete (it used to hit the owner).
+      if (!member.ok) console.error("getChatMember failed", uid, member.description);
+      else if (["member", "restricted"].includes(member.result?.status)) {
         await tg("deleteMessage", { chat_id: CHAT, message_id: m.message_id });
         await kick(CHAT, uid);
         await tg("sendMessage", { chat_id: uid, text: `You were removed from µNORMAN SKIF — link a wallet holding or staking ≥10 $uNRMN first, then rejoin.\n\n${WELCOME}`, reply_markup: menu(true) });
@@ -91,6 +96,7 @@ async function handle(u: any) {
   if (cm && CHAT && String(cm.chat.id) === CHAT && cm.new_chat_member.status === "member" &&
       !["member", "administrator", "creator"].includes(cm.old_chat_member.status)) {
     const uid = cm.new_chat_member.user.id;
+    if (OWNERS.has(String(uid))) return;
     const { data } = await sb.from("skif_members").select("is_holder").eq("tg_user_id", uid).maybeSingle();
     if (!data?.is_holder) await kick(CHAT, uid);
   }
