@@ -23,6 +23,7 @@
 <div id="links"></div>
 <h3 id="live">📈 Live $uNRMN activity</h3>
 <ul id="feed"><li>Loading…</li></ul>
+<p id="feed-status" class="fine"></p>
 <p class="fine">Not financial advice. DYOR.</p>
 <script type="module">
 import { EthereumProvider } from "https://esm.sh/@walletconnect/ethereum-provider@2";
@@ -149,15 +150,16 @@ async function loadFeed() {
   } else {
     for (const event of ordered) {
       const li = document.createElement("li");
-      li.className = "event " + event.kind.toLowerCase().replace(/\\s+/g, "-");
+      li.className = "event " + event.kind.toLowerCase().replace(/\s+/g, "-");
       li.textContent = event.kind + " · " + event.detail + " · " + event.time;
       ul.appendChild(li);
     }
   }
   feedStatus.textContent = "uToken trades + card/layer records + Blockscout/RPC transfers · refreshed " + new Date().toLocaleTimeString();
 }
-loadFeed();
-setInterval(loadFeed, 10000);
+const refreshFeed = () => loadFeed().catch(() => { feedStatus.textContent = "Live feed unavailable — retrying…"; });
+refreshFeed();
+setInterval(refreshFeed, 10000);
 if (location.hash === "#live") document.getElementById("live").scrollIntoView();
 
 // Verify
