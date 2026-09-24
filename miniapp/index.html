@@ -55,28 +55,109 @@ for (const [label, url] of LINKS) {
   box.appendChild(a);
 }
 
-// Live feed from Blockscout, refreshed every 10s
+// Live activity: uToken trades + collection records + token transfers.
+// Each source is read-only and rendered with textContent so source data cannot inject markup.
 const ZERO = "0x0000000000000000000000000000000000000000";
-const short = (a = "") => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "?";
-async function loadFeed() {
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a9df523b3ef";
+const RPC_URL = "https://rpc.mainnet.chain.robinhood.com";
+const short = (a = "") => a ? a.slice(0, 6) + "…" + a.slice(-4) : "?";
+const number = (value, digits = 4) => Number.isFinite(Number(value)) ? Number(value).toLocaleString("en-US", { maximumFractionDigits: digits }) : "?";
+const when = (value) => value ? new Date(value).toLocaleString() : "time unavailable";
+const feedStatus = document.getElementById("feed-status");
+
+async function json(url, init) {
+  const response = await fetch(url, init);
+  if (!response.ok) throw new Error(response.status + " from " + url);
+  return response.json();
+}
+
+async function tradeEvents() {
+  const payload = await json("https://utoken.gg/api/tokens/unrmn/trades?page=1&take=100");
+  return (payload.trades || []).map((trade) => ({
+    id: "trade:" + trade.id,
+    order: Number(trade.tsMs || 0),
+    kind: String(trade.side || "TRADE").toUpperCase(),
+    detail: number(trade.tokenAmount) + " uNRMN · " + (trade.valueQuote != null ? number(trade.valueQuote, 6) + " ETH" : number(trade.valueUsd, 2) + " USD") + " · " + short(trade.maker),
+    time: when(trade.tsMs),
+  }));
+}
+
+async function collectionEvents(sort, kind) {
+  const payload = await json("https://utoken.gg/api/tokens/unrmn/assets?sort=" + sort + "&page=1&take=100");
+  return (payload.items || []).map((asset) => ({
+    id: kind + ":" + asset.assetId + ":" + (asset.mintedMs || asset.movedMs || ""),
+    order: Number(asset.mintedMs || asset.movedMs || 0),
+    kind,
+    detail: "#" + asset.assetId + " · " + short(asset.owner) + (asset.mintTx ? " · " + short(asset.mintTx) : ""),
+    time: when(asset.mintedMs || asset.movedMs),
+  }));
+}
+
+async function blockscoutTransfers() {
+  const payload = await json("https://robinhoodchain.blockscout.com/api/v2/tokens/" + TOKEN + "/transfers");
+  return (payload.items || []).map((transfer) => {
+    const from = transfer.from?.hash || "";
+    const to = transfer.to?.hash || "";
+    const kind = from.toLowerCase() === ZERO ? "MINT" : to.toLowerCase() === ZERO ? "BURN" : (transfer.method ? String(transfer.method).toUpperCase() : "SEND");
+    const decimals = Number(transfer.total?.decimals || 0);
+    const amount = transfer.total?.value != null ? number(Number(BigInt(transfer.total.value)) / 10 ** decimals) : (transfer.total?.token_id != null ? "#" + transfer.total.token_id : "?");
+    return { id: "transfer:" + (transfer.transaction_hash || transfer.tx_hash || from + to + amount), order: Date.parse(transfer.timestamp || "") || 0, kind, detail: amount + " uNRMN · " + short(from) + " → " + short(to), time: when(transfer.timestamp) };
+  });
+}
+
+async function rpc(method, params) {
+  return (await json(RPC_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) })).result;
+}
+
+async function rpcTransfers() {
+  const latestHex = await rpc("eth_blockNumber", []);
+  const latest = Number.parseInt(latestHex, 16);
+  const logs = await rpc("eth_getLogs", [{ address: TOKEN, fromBlock: "0x" + Math.max(0, latest - 50000).toString(16), toBlock: latestHex, topics: [TRANSFER_TOPIC] }]);
+  let decimals = 18;
+  try { decimals = Number.parseInt((await rpc("eth_call", [{ to: TOKEN, data: "0x313ce567" }, "latest"])).slice(-2), 16); } catch {}
+  return (logs || []).reverse().map((log) => {
+    const from = "0x" + log.topics[1].slice(-40);
+    const to = "0x" + log.topics[2].slice(-40);
+    const amount = number(Number(BigInt(log.data || "0x0")) / 10 ** decimals);
+    return { id: "rpc:" + log.transactionHash + ":" + log.logIndex, order: Number.parseInt(log.blockNumber, 16), kind: "SEND", detail: amount + " uNRMN · " + short(from) + " → " + short(to), time: "block " + Number.parseInt(log.blockNumber, 16) };
+  });
+}
+
+async function transferEvents() {
   try {
-    const r = await fetch(`https://robinhoodchain.blockscout.com/api/v2/tokens/${TOKEN}/transfers`);
-    const { items = [] } = await r.json();
-    const ul = document.getElementById("feed"); ul.replaceChildren();
-    for (const t of items.slice(0, 25)) {
-      const from = t.from?.hash ?? "", to = t.to?.hash ?? "";
-      const kind = from.toLowerCase() === ZERO ? "MINT" : to.toLowerCase() === ZERO ? "BURN"
-        : (t.method ? String(t.method).toUpperCase() : "SEND");
-      const dec = Number(t.total?.decimals ?? 0);
-      const amt = t.total?.value != null ? (Number(BigInt(t.total.value)) / 10 ** dec).toLocaleString("en-US", { maximumFractionDigits: 4 })
-        : (t.total?.token_id != null ? `#${t.total.token_id}` : "");
+    const events = await blockscoutTransfers();
+    if (events.length) return events;
+  } catch {}
+  try { return await rpcTransfers(); } catch { return []; }
+}
+
+async function loadFeed() {
+  const results = await Promise.allSettled([
+    tradeEvents(),
+    collectionEvents("newest", "CARD MINTED"),
+    collectionEvents("revealed", "LAYER REVEALED"),
+    transferEvents(),
+  ]);
+  const events = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  const unique = new Map();
+  for (const event of events) if (!unique.has(event.id)) unique.set(event.id, event);
+  const ordered = [...unique.values()].sort((a, b) => b.order - a.order).slice(0, 100);
+  const ul = document.getElementById("feed");
+  ul.replaceChildren();
+  if (!ordered.length) {
+    ul.appendChild(Object.assign(document.createElement("li"), { textContent: "No live activity returned." }));
+  } else {
+    for (const event of ordered) {
       const li = document.createElement("li");
-      li.textContent = `${kind} ${amt} · ${short(from)} → ${short(to)} · ${t.timestamp ? new Date(t.timestamp).toLocaleString() : ""}`;
+      li.className = "event " + event.kind.toLowerCase().replace(/\\s+/g, "-");
+      li.textContent = event.kind + " · " + event.detail + " · " + event.time;
       ul.appendChild(li);
     }
-  } catch { document.getElementById("feed").replaceChildren(Object.assign(document.createElement("li"), { textContent: "Feed unavailable" })); }
+  }
+  feedStatus.textContent = "uToken trades + card/layer records + Blockscout/RPC transfers · refreshed " + new Date().toLocaleTimeString();
 }
-loadFeed(); setInterval(loadFeed, 10000);
+loadFeed();
+setInterval(loadFeed, 10000);
 if (location.hash === "#live") document.getElementById("live").scrollIntoView();
 
 // Verify
