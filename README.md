@@ -10,3 +10,5 @@ Hold ≥10 $uNRMN → verified entry. Wallets are re-checked every minute.
 All secrets live in Supabase Edge Function Secrets — never commit them.
 
 $uNRMN Hybrid-DeFi dApp: https://github.com/normancomics/uNRMN
+
+Project contact: unrmn@tutamail.com
